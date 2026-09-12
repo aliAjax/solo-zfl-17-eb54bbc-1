@@ -20,6 +20,9 @@ const MAX_REEL_NAME_LEN = 60;
 const MAX_REEL_NOTE_LEN = 200;
 // 只接受本应用自己生成的图片 dataURL 形态，其他一律丢弃
 const THUMB_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+// 标识只允许安全字符：uuid / id-xxx 形态。含任何其他字符的标识整体作废重新生成，
+// 保证标识文本拼进 HTML 属性时不可能改变页面结构或触发事件
+const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
@@ -185,10 +188,15 @@ function sanitizeThumb(value) {
   return THUMB_DATA_URL_RE.test(value) ? value : "";
 }
 
+// 标识净化：合法原样保留，非法（含引号/标签/事件属性等）直接换新 id
+function sanitizeId(value) {
+  return typeof value === "string" && SAFE_ID_RE.test(value) ? value : uid();
+}
+
 function normalizeReel(raw) {
   const reel = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
-    id: typeof reel.id === "string" && reel.id ? reel.id : uid(),
+    id: sanitizeId(reel.id),
     name: typeof reel.name === "string" ? reel.name.slice(0, MAX_REEL_NAME_LEN) : "未命名卷",
     note: clampText(reel.note, MAX_REEL_NOTE_LEN),
     segments: Array.isArray(reel.segments)
@@ -201,7 +209,7 @@ function normalizeSegment(raw) {
   const seg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const duration = Number(seg.duration);
   return {
-    id: typeof seg.id === "string" && seg.id ? seg.id : uid(),
+    id: sanitizeId(seg.id),
     code: clampText(seg.code, MAX_CODE_LEN),
     duration: Number.isFinite(duration) && duration > 0 ? Math.min(Math.round(duration), MAX_DURATION_SEC) : 1,
     shift: SHIFT_OPTIONS.includes(seg.shift) ? seg.shift : "正常",
@@ -387,7 +395,7 @@ function getFilteredSegments() {
 function renderReelBar() {
   const reel = currentReel();
   els.reelSelect.innerHTML = state.reels
-    .map((r) => `<option value="${r.id}">${escapeHtml(reelDisplayName(r))}（${r.segments.length} 段）</option>`)
+    .map((r) => `<option value="${escapeHtml(r.id)}">${escapeHtml(reelDisplayName(r))}（${r.segments.length} 段）</option>`)
     .join("");
   els.reelSelect.value = reel.id;
   if (els.reelName.value !== reel.name) els.reelName.value = reel.name;
@@ -441,7 +449,7 @@ function renderList() {
             ? `<span class="tag risk-notice">留意</span>`
             : "";
       return `
-        <article class="segment-card" draggable="${filtering ? "false" : "true"}" data-id="${item.id}">
+        <article class="segment-card" draggable="${filtering ? "false" : "true"}" data-id="${escapeHtml(item.id)}">
           <div class="thumb">
             ${
               item.thumb
@@ -462,10 +470,10 @@ function renderList() {
             <p class="segment-note">${escapeHtml(item.note || "没有备注。")}</p>
           </div>
           <div class="segment-actions">
-            <button type="button" title="上移" data-move-up="${item.id}" ${filtering ? "disabled" : ""}>↑</button>
-            <button type="button" title="下移" data-move-down="${item.id}" ${filtering ? "disabled" : ""}>↓</button>
-            <button type="button" title="编辑" data-edit="${item.id}">✎</button>
-            <button type="button" title="删除" data-delete="${item.id}">×</button>
+            <button type="button" title="上移" data-move-up="${escapeHtml(item.id)}" ${filtering ? "disabled" : ""}>↑</button>
+            <button type="button" title="下移" data-move-down="${escapeHtml(item.id)}" ${filtering ? "disabled" : ""}>↓</button>
+            <button type="button" title="编辑" data-edit="${escapeHtml(item.id)}">✎</button>
+            <button type="button" title="删除" data-delete="${escapeHtml(item.id)}">×</button>
           </div>
         </article>
       `;
