@@ -271,8 +271,10 @@ function normalizeTrash(list) {
         segment: normalizeSegment(raw.segment),
         deletedAt
       });
-    } else if (raw.type === "reel" && raw.reel && typeof raw.reel === "object") {
-      entries.push({ type: "reel", index, reel: normalizeReel(raw.reel), deletedAt });
+    } else if (raw.type === "reel" && raw.reel && typeof raw.reel === "object" && !Array.isArray(raw.reel)) {
+      // 整卷记录只校验结构、保留原始内容：字段级规范化留给恢复时统一处理，
+      // 这样跳过空白/重复编号才能在恢复时向用户明确报告
+      entries.push({ type: "reel", index, reel: raw.reel, deletedAt });
     }
   }
   return entries;
@@ -425,7 +427,7 @@ function renderReelBar() {
   els.restoreBtn.title = latest
     ? latest.type === "segment"
       ? `恢复片段「${latest.segment.code}」到「${latest.reelName}」`
-      : `恢复胶片卷「${reelDisplayName(latest.reel)}」（含 ${latest.reel.segments.length} 段）`
+      : `恢复胶片卷「${reelDisplayName(latest.reel)}」（含 ${Array.isArray(latest.reel.segments) ? latest.reel.segments.length : 0} 段）`
     : "最近没有删除记录";
 }
 
@@ -763,6 +765,20 @@ function deleteCurrentReel() {
   toast(`已删除胶片卷「${reelDisplayName(reel)}」`, { label: "立即恢复", onClick: restoreLastDeleted });
 }
 
+// 恢复片段时生成与本卷现有编号不冲突（忽略大小写）的编号：
+// 原名可用则用原名，否则追加 -恢复、-恢复2 … 直到唯一，整体不超过长度上限
+function uniqueRestoredCode(reel, code) {
+  const taken = new Set(reel.segments.map((item) => item.code.toLowerCase()));
+  if (!taken.has(code.toLowerCase())) return code;
+  let n = 1;
+  for (;;) {
+    const suffix = n === 1 ? "-恢复" : `-恢复${n}`;
+    const candidate = code.slice(0, MAX_CODE_LEN - suffix.length) + suffix;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+    n++;
+  }
+}
+
 function restoreLastDeleted() {
   const entry = state.trash.shift();
   if (!entry) {
@@ -771,19 +787,35 @@ function restoreLastDeleted() {
     return;
   }
   if (entry.type === "segment") {
-    const reel = state.reels.find((item) => item.id === entry.reelId) || currentReel();
     const segment = normalizeSegment(entry.segment);
-    const conflict = reel.segments.some((item) => item.code.trim().toLowerCase() === segment.code.trim().toLowerCase());
-    if (conflict) segment.code = `${segment.code}-恢复`;
+    if (!segment.code) {
+      // 编号为空白的记录无法恢复：丢弃该条并明确反馈，其余恢复记录保留
+      renderAll();
+      toast(
+        state.trash.length
+          ? `有 1 条记录的片段编号为空白，无法恢复，已丢弃；其余 ${state.trash.length} 条记录仍可恢复`
+          : "有 1 条记录的片段编号为空白，无法恢复，已丢弃"
+      );
+      return;
+    }
+    const reel = state.reels.find((item) => item.id === entry.reelId) || currentReel();
+    const restoredCode = uniqueRestoredCode(reel, segment.code);
+    const renamed = restoredCode !== segment.code;
+    segment.code = restoredCode;
     reel.segments.splice(Math.min(entry.index, reel.segments.length), 0, segment);
     state.currentReelId = reel.id;
-    toast(conflict ? `已恢复片段，因编号重复改名为「${segment.code}」` : `已恢复片段 ${segment.code} 到「${reelDisplayName(reel)}」`);
+    toast(renamed ? `已恢复片段，因编号重复改名为「${segment.code}」` : `已恢复片段 ${segment.code} 到「${reelDisplayName(reel)}」`);
   } else {
-    const reel = normalizeReel(entry.reel);
+    // 整卷恢复与导入走同一套编号规则，跳过的非法片段一并报告
+    const stats = { blank: 0, dup: 0 };
+    const reel = normalizeReel(entry.reel, stats);
     if (state.reels.some((item) => item.id === reel.id)) reel.id = uid();
     state.reels.splice(Math.min(entry.index, state.reels.length), 0, reel);
     state.currentReelId = reel.id;
-    toast(`已恢复胶片卷「${reelDisplayName(reel)}」（${reel.segments.length} 段）`);
+    const skipped = [];
+    if (stats.blank > 0) skipped.push(`${stats.blank} 个空白编号`);
+    if (stats.dup > 0) skipped.push(`${stats.dup} 个重复编号`);
+    toast(`已恢复胶片卷「${reelDisplayName(reel)}」（${reel.segments.length} 段）${skipped.length ? `，已跳过 ${skipped.join("、")} 的片段` : ""}`);
   }
   renderAll();
 }
