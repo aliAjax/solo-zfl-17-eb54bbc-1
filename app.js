@@ -10,6 +10,17 @@ const MAX_DURATION_SEC = 24 * 3600;
 const REEL_LENGTH_WARN_SEC = 3600;
 const THUMB_MAX_EDGE = 360;
 
+// 导入/读取外部数据时的安全边界
+const MAX_THUMB_DATAURL_LEN = 500 * 1024; // 缩略图 dataURL 最大长度（约 375KB 图片）
+const MAX_REELS = 500;
+const MAX_SEGMENTS_PER_REEL = 5000;
+const MAX_CODE_LEN = 40;
+const MAX_NOTE_LEN = 500;
+const MAX_REEL_NAME_LEN = 60;
+const MAX_REEL_NOTE_LEN = 200;
+// 只接受本应用自己生成的图片 dataURL 形态，其他一律丢弃
+const THUMB_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif"];
 
@@ -163,27 +174,82 @@ function seedState() {
   };
 }
 
+// 外部数据（备份文件 / localStorage）一律按纯数据处理：截断文本、白名单校验缩略图
+function clampText(value, max) {
+  return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function sanitizeThumb(value) {
+  if (typeof value !== "string" || value === "") return "";
+  if (value.length > MAX_THUMB_DATAURL_LEN) return "";
+  return THUMB_DATA_URL_RE.test(value) ? value : "";
+}
+
 function normalizeReel(raw) {
-  const reel = raw && typeof raw === "object" ? raw : {};
+  const reel = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   return {
     id: typeof reel.id === "string" && reel.id ? reel.id : uid(),
-    name: typeof reel.name === "string" ? reel.name : "未命名卷",
-    note: typeof reel.note === "string" ? reel.note : "",
-    segments: Array.isArray(reel.segments) ? reel.segments.map(normalizeSegment) : []
+    name: typeof reel.name === "string" ? reel.name.slice(0, MAX_REEL_NAME_LEN) : "未命名卷",
+    note: clampText(reel.note, MAX_REEL_NOTE_LEN),
+    segments: Array.isArray(reel.segments)
+      ? reel.segments.slice(0, MAX_SEGMENTS_PER_REEL).map(normalizeSegment)
+      : []
   };
 }
 
 function normalizeSegment(raw) {
-  const seg = raw && typeof raw === "object" ? raw : {};
+  const seg = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const duration = Number(seg.duration);
   return {
     id: typeof seg.id === "string" && seg.id ? seg.id : uid(),
-    code: typeof seg.code === "string" ? seg.code : "",
-    duration: Number.isFinite(Number(seg.duration)) && Number(seg.duration) > 0 ? Math.round(Number(seg.duration)) : 1,
+    code: clampText(seg.code, MAX_CODE_LEN),
+    duration: Number.isFinite(duration) && duration > 0 ? Math.min(Math.round(duration), MAX_DURATION_SEC) : 1,
     shift: SHIFT_OPTIONS.includes(seg.shift) ? seg.shift : "正常",
     damage: DAMAGE_OPTIONS.includes(seg.damage) ? seg.damage : "完好",
-    note: typeof seg.note === "string" ? seg.note : "",
-    thumb: typeof seg.thumb === "string" ? seg.thumb : ""
+    note: clampText(seg.note, MAX_NOTE_LEN),
+    thumb: sanitizeThumb(seg.thumb)
   };
+}
+
+// 批量规范化并去重 id：同一备份里重复的卷 id / 片段 id 重新生成，避免互相串扰
+function normalizeReels(list) {
+  const seenReelIds = new Set();
+  return list.slice(0, MAX_REELS).map((raw) => {
+    const reel = normalizeReel(raw);
+    if (seenReelIds.has(reel.id)) reel.id = uid();
+    seenReelIds.add(reel.id);
+    const seenSegmentIds = new Set();
+    for (const segment of reel.segments) {
+      if (seenSegmentIds.has(segment.id)) segment.id = uid();
+      seenSegmentIds.add(segment.id);
+    }
+    return reel;
+  });
+}
+
+// 回收站记录同样来自本地存储，读取时逐条校验结构
+function normalizeTrash(list) {
+  if (!Array.isArray(list)) return [];
+  const entries = [];
+  for (const raw of list) {
+    if (entries.length >= TRASH_LIMIT) break;
+    if (!raw || typeof raw !== "object") continue;
+    const index = Number.isInteger(raw.index) && raw.index >= 0 ? raw.index : 0;
+    const deletedAt = Number.isFinite(Number(raw.deletedAt)) ? Number(raw.deletedAt) : 0;
+    if (raw.type === "segment" && raw.segment && typeof raw.segment === "object") {
+      entries.push({
+        type: "segment",
+        reelId: String(raw.reelId || ""),
+        reelName: clampText(raw.reelName, MAX_REEL_NAME_LEN),
+        index,
+        segment: normalizeSegment(raw.segment),
+        deletedAt
+      });
+    } else if (raw.type === "reel" && raw.reel && typeof raw.reel === "object") {
+      entries.push({ type: "reel", index, reel: normalizeReel(raw.reel), deletedAt });
+    }
+  }
+  return entries;
 }
 
 function loadState() {
@@ -216,10 +282,9 @@ function loadState() {
   }
 
   if (!parsed || !Array.isArray(parsed.reels)) parsed = seedState();
-  parsed.reels = parsed.reels.map(normalizeReel);
+  parsed.reels = normalizeReels(parsed.reels);
   if (parsed.reels.length === 0) parsed.reels = seedState().reels;
-  if (!Array.isArray(parsed.trash)) parsed.trash = [];
-  parsed.trash = parsed.trash.slice(0, TRASH_LIMIT);
+  parsed.trash = normalizeTrash(parsed.trash);
   if (!parsed.reels.some((reel) => reel.id === parsed.currentReelId)) {
     parsed.currentReelId = parsed.reels[0].id;
   }
@@ -380,7 +445,7 @@ function renderList() {
           <div class="thumb">
             ${
               item.thumb
-                ? `<img src="${item.thumb}" alt="${escapeHtml(item.code)} 缩略图" />`
+                ? `<img src="${escapeHtml(item.thumb)}" alt="${escapeHtml(item.code)} 缩略图" />`
                 : `<div class="film-placeholder" style="background:${FALLBACK_THUMBS[realIndex % FALLBACK_THUMBS.length]}">${escapeHtml(item.code)}</div>`
             }
           </div>
@@ -775,11 +840,15 @@ function importJson(file) {
       toast("导入失败：备份文件中没有胶片卷数据。");
       return;
     }
-    const ok = window.confirm(`导入将覆盖当前全部数据（${reels.length} 个胶片卷），确定继续吗？\n建议先「备份全部数据」。`);
+    const ok = window.confirm(
+      `导入将覆盖当前全部数据（${reels.length} 个胶片卷），并清空现有删除恢复记录，确定继续吗？\n建议先「备份全部数据」。`
+    );
     if (!ok) return;
-    state.reels = reels.map(normalizeReel);
+    state.reels = normalizeReels(reels);
     state.currentReelId = state.reels[0].id;
+    state.trash = []; // 导入后与旧数据彻底隔离，恢复记录不可跨备份复活片段
     resetForm();
+    hideToast();
     renderAll();
     toast(`已导入 ${state.reels.length} 个胶片卷`);
   };
