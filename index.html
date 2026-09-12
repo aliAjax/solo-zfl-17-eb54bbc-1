@@ -3,113 +3,135 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>胶片分镜条核对台</title>
+    <title>放映胶片核对台</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <main class="shell">
       <header class="hero">
         <div>
-          <p class="eyebrow">纸质放映胶片整理</p>
-          <h1>胶片分镜条核对台</h1>
+          <p class="eyebrow">离线使用 · 数据保存在本机浏览器</p>
+          <h1>放映胶片核对台</h1>
         </div>
         <div class="hero-stats">
           <div>
-            <span>总时长</span>
-            <strong id="totalDuration">0:00</strong>
-          </div>
-          <div>
-            <span>破损片段</span>
-            <strong id="damageCount">0</strong>
-          </div>
-          <div>
             <span>片段数</span>
-            <strong id="segmentCount">0</strong>
+            <strong id="statCount">0</strong>
+          </div>
+          <div>
+            <span>总时长</span>
+            <strong id="statDuration">0:00</strong>
+          </div>
+          <div>
+            <span>高风险</span>
+            <strong id="statRisk">0</strong>
+          </div>
+          <div>
+            <span>需留意</span>
+            <strong id="statNotice">0</strong>
           </div>
         </div>
       </header>
 
-      <section class="toolbar">
-        <label>
-          胶片卷
-          <input id="reelTitle" type="text" placeholder="例：春日试映A卷" />
-        </label>
+      <section class="panel reel-bar" aria-label="胶片卷管理">
+        <div class="reel-bar-row">
+          <label>
+            当前胶片卷
+            <select id="reelSelect"></select>
+          </label>
+          <button id="newReelBtn" type="button">＋ 新建胶片卷</button>
+          <button id="deleteReelBtn" type="button" class="danger">删除本卷</button>
+          <div class="spacer"></div>
+          <button id="restoreBtn" type="button" disabled>↩ 恢复最近删除</button>
+          <button id="exportCsvBtn" type="button">导出试映清单 CSV</button>
+          <button id="exportJsonBtn" type="button">备份全部数据</button>
+          <button id="importJsonBtn" type="button">导入备份</button>
+          <input id="importFileInput" type="file" accept="application/json,.json" hidden />
+        </div>
+        <div class="reel-bar-row reel-bar-row--meta">
+          <label>
+            卷名
+            <input id="reelName" type="text" maxlength="60" placeholder="例：春日试映A卷" />
+          </label>
+          <label>
+            卷备注（随本卷保存）
+            <input id="reelNote" type="text" maxlength="200" placeholder="例：2003 年馆藏数字化第三批，片盒 7" />
+          </label>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="筛选">
         <label>
           颜色偏移
-          <select id="colorFilter">
-            <option value="all">全部</option>
-            <option value="正常">正常</option>
-            <option value="偏红">偏红</option>
-            <option value="偏青">偏青</option>
-            <option value="偏黄">偏黄</option>
-            <option value="褪色">褪色</option>
-          </select>
+          <select id="colorFilter"></select>
         </label>
         <label>
-          搜索
-          <input id="searchInput" type="search" placeholder="片段编号或备注" />
+          破损情况
+          <select id="damageFilter"></select>
         </label>
-        <button id="exportBtn">导出清单</button>
+        <label>
+          关键词
+          <input id="searchInput" type="search" placeholder="搜索编号或备注" />
+        </label>
+        <button id="clearFilterBtn" type="button">清除筛选</button>
+        <span id="filterInfo" class="filter-info"></span>
       </section>
 
       <section class="layout">
         <aside class="panel">
-          <h2>录入片段</h2>
-          <form id="segmentForm" class="segment-form">
+          <h2 id="formTitle">录入片段</h2>
+          <div id="formErrors" class="form-errors" hidden></div>
+          <form id="segmentForm" class="segment-form" novalidate>
             <label>
-              片段编号
-              <input id="codeInput" required placeholder="A-014" />
+              片段编号 *
+              <input id="codeInput" type="text" maxlength="40" placeholder="例：A-014" autocomplete="off" />
             </label>
             <label>
-              时长秒数
-              <input id="durationInput" required type="number" min="1" value="12" />
+              时长（秒，或 分:秒）*
+              <input id="durationInput" type="text" inputmode="numeric" placeholder="例：95 或 1:35" autocomplete="off" />
             </label>
             <label>
               颜色偏移
-              <select id="shiftInput">
-                <option value="正常">正常</option>
-                <option value="偏红">偏红</option>
-                <option value="偏青">偏青</option>
-                <option value="偏黄">偏黄</option>
-                <option value="褪色">褪色</option>
-              </select>
+              <select id="shiftInput"></select>
             </label>
             <label>
               破损情况
-              <select id="damageInput">
-                <option value="完好">完好</option>
-                <option value="轻微划痕">轻微划痕</option>
-                <option value="齿孔破损">齿孔破损</option>
-                <option value="接片松动">接片松动</option>
-                <option value="需跳过">需跳过</option>
-              </select>
+              <select id="damageInput"></select>
             </label>
             <label>
-              缩略图
-              <input id="thumbInput" type="file" accept="image/*" />
+              缩略图（PNG / JPG / WebP / GIF，≤ 2MB）
+              <input id="thumbInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
             </label>
+            <div id="thumbPreviewWrap" class="thumb-preview" hidden>
+              <img id="thumbPreview" alt="当前缩略图预览" />
+              <button id="removeThumbBtn" type="button">移除缩略图</button>
+            </div>
             <label>
               备注
-              <textarea id="noteInput" rows="4" placeholder="试映前要留意的画面、接片或声音点"></textarea>
+              <textarea id="noteInput" rows="3" maxlength="500" placeholder="试映前要留意的画面、接片或声音点"></textarea>
             </label>
-            <button class="primary" type="submit">加入放映清单</button>
+            <button class="primary" type="submit" id="submitBtn">加入清单</button>
+            <button type="button" id="cancelEditBtn" hidden>取消编辑</button>
           </form>
         </aside>
 
         <section class="panel list-panel">
           <div class="panel-head">
             <h2>放映顺序</h2>
-            <span>拖拽片段调整顺序</span>
+            <span id="orderHint">拖拽卡片或点 ↑ ↓ 调整顺序</span>
           </div>
           <div id="segmentList" class="segment-list"></div>
         </section>
 
         <aside class="panel warning-panel">
-          <h2>试映前核对</h2>
+          <h2>风险提醒</h2>
+          <div id="riskSummary" class="risk-summary"></div>
           <div id="warningList" class="warning-list"></div>
         </aside>
       </section>
     </main>
+
+    <div id="toast" class="toast" hidden></div>
 
     <script src="app.js"></script>
   </body>
