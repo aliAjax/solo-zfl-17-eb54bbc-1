@@ -193,15 +193,33 @@ function sanitizeId(value) {
   return typeof value === "string" && SAFE_ID_RE.test(value) ? value : uid();
 }
 
-function normalizeReel(raw) {
+function normalizeReel(raw, stats) {
   const reel = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  // 编号规则与录入表单一致：去空白后必须非空，且忽略大小写在本卷内不重复。
+  // 违规片段不写入清单，由 stats 计数后向用户明确报告。
+  const seenCodes = new Set();
+  const segments = [];
+  if (Array.isArray(reel.segments)) {
+    for (const rawSegment of reel.segments.slice(0, MAX_SEGMENTS_PER_REEL)) {
+      const segment = normalizeSegment(rawSegment);
+      const codeKey = segment.code.toLowerCase();
+      if (!codeKey) {
+        if (stats) stats.blank++;
+        continue;
+      }
+      if (seenCodes.has(codeKey)) {
+        if (stats) stats.dup++;
+        continue;
+      }
+      seenCodes.add(codeKey);
+      segments.push(segment);
+    }
+  }
   return {
     id: sanitizeId(reel.id),
     name: typeof reel.name === "string" ? reel.name.slice(0, MAX_REEL_NAME_LEN) : "未命名卷",
     note: clampText(reel.note, MAX_REEL_NOTE_LEN),
-    segments: Array.isArray(reel.segments)
-      ? reel.segments.slice(0, MAX_SEGMENTS_PER_REEL).map(normalizeSegment)
-      : []
+    segments
   };
 }
 
@@ -210,7 +228,7 @@ function normalizeSegment(raw) {
   const duration = Number(seg.duration);
   return {
     id: sanitizeId(seg.id),
-    code: clampText(seg.code, MAX_CODE_LEN),
+    code: clampText(seg.code, MAX_CODE_LEN).trim(),
     duration: Number.isFinite(duration) && duration > 0 ? Math.min(Math.round(duration), MAX_DURATION_SEC) : 1,
     shift: SHIFT_OPTIONS.includes(seg.shift) ? seg.shift : "正常",
     damage: DAMAGE_OPTIONS.includes(seg.damage) ? seg.damage : "完好",
@@ -220,10 +238,10 @@ function normalizeSegment(raw) {
 }
 
 // 批量规范化并去重 id：同一备份里重复的卷 id / 片段 id 重新生成，避免互相串扰
-function normalizeReels(list) {
+function normalizeReels(list, stats) {
   const seenReelIds = new Set();
   return list.slice(0, MAX_REELS).map((raw) => {
-    const reel = normalizeReel(raw);
+    const reel = normalizeReel(raw, stats);
     if (seenReelIds.has(reel.id)) reel.id = uid();
     seenReelIds.add(reel.id);
     const seenSegmentIds = new Set();
@@ -852,13 +870,17 @@ function importJson(file) {
       `导入将覆盖当前全部数据（${reels.length} 个胶片卷），并清空现有删除恢复记录，确定继续吗？\n建议先「备份全部数据」。`
     );
     if (!ok) return;
-    state.reels = normalizeReels(reels);
+    const stats = { blank: 0, dup: 0 };
+    state.reels = normalizeReels(reels, stats);
     state.currentReelId = state.reels[0].id;
     state.trash = []; // 导入后与旧数据彻底隔离，恢复记录不可跨备份复活片段
     resetForm();
     hideToast();
     renderAll();
-    toast(`已导入 ${state.reels.length} 个胶片卷`);
+    const skipped = [];
+    if (stats.blank > 0) skipped.push(`${stats.blank} 个空白编号`);
+    if (stats.dup > 0) skipped.push(`${stats.dup} 个重复编号`);
+    toast(`已导入 ${state.reels.length} 个胶片卷${skipped.length ? `，已跳过 ${skipped.join("、")} 的片段` : ""}`);
   };
   reader.onerror = () => toast("导入失败：无法读取文件。");
   reader.readAsText(file);
